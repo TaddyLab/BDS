@@ -97,11 +97,12 @@ spendy <- glm( log(spend) ~ .-id, data=browser)
 round(summary(spendy)$coef,2)
 pval <- summary(spendy)$coef[-1,"Pr(>|t|)"]
 
+pdf("fig1.9.pdf", width=4, height=4)
 par(mai=c(.8,.8,.2,.2))
-plot(sort(pval), bty="n", xlab="rank", ylab="p-values")
-abline(a=0, b=.25/9)
-points(sort(pval)[1:8], col=2, pch=20)
-
+plot(sort(pval), bty="n", xlab="rank", ylab=expression(italic(p)-values))
+abline(a=0, b=.1/9)
+points(sort(pval)[1:5], col=2, pch=20)
+dev.off()
 
 par(mai=c(.8,.8,.2,.2))
 plot(c(-1,0,0,1,1,2), c(0,0,1,1,0,0), ylim=c(0,1.5), xlim=c(-0.1,1.1),
