@@ -45,7 +45,7 @@ deviance <- function(y, pred, family=c("gaussian","binomial")){
 	}
 }
 
-## get null devaince too, and return R2
+## get null deviance too, and return R2
 R2 <- function(y, pred, family=c("gaussian","binomial")){
 	fam <- match.arg(family)
 	if(fam=="binomial"){
