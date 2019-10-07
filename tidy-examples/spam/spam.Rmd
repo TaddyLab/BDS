@@ -24,9 +24,11 @@ Load required packages
 
 ```{r load_packages}
 
-library(here)       # for referencing files and folders
-library(tidyverse)  # for data reading wrangling and visualization
-library(tidymodels) # for data modeling
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(here,       # for referencing files and folders
+               tidyverse,  # for data reading wrangling and visualization
+               tidymodels) # for data modeling
 
 ```
 
