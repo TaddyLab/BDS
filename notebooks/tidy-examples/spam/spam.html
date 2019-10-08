@@ -13,7 +13,7 @@
 <meta name="author" content="Matt Taddy" />
 <meta name="author" content="Itamar Caspi" />
 
-<meta name="date" content="2019-10-07" />
+<meta name="date" content="2019-10-08" />
 
 <title>Spam detection example</title>
 
@@ -380,7 +380,7 @@ summary {
 <h1 class="title toc-ignore">Spam detection example</h1>
 <h4 class="author">Matt Taddy</h4>
 <h4 class="author">Itamar Caspi</h4>
-<h4 class="date">2019-10-07</h4>
+<h4 class="date">2019-10-08</h4>
 
 </div>
 
@@ -388,9 +388,11 @@ summary {
 <div id="setup" class="section level2">
 <h2>Setup</h2>
 <p>Load required packages</p>
-<pre class="r"><code>library(here)       # for referencing files and folders
-library(tidyverse)  # for data reading wrangling and visualization
-library(tidymodels) # for data modeling</code></pre>
+<pre class="r"><code>if (!require(&quot;pacman&quot;)) install.packages(&quot;pacman&quot;)
+
+pacman::p_load(here,       # for referencing files and folders
+               tidyverse,  # for data reading wrangling and visualization
+               tidymodels) # for data modeling</code></pre>
 <p>Read the spam dataset</p>
 <pre class="r"><code>email &lt;- read_csv(here(&quot;spam&quot;, &quot;spam.csv&quot;))</code></pre>
 </div>
