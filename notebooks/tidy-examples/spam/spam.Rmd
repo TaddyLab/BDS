@@ -161,8 +161,8 @@ spampredict %>%
 
 ## Deviance
 
-In-sample proportion of variance explained (R2)
-```{r}
+In-sample proportion of variance explained ($R^2$)
+```{r R2_insample}
 
 glance(spammy) %>% 
   mutate(R2 = (1 - deviance / null.deviance)) %>% 
@@ -170,4 +170,26 @@ glance(spammy) %>%
 
 ```
 
-Out-of-sample R2 (TBA)
+Out-of-sample $R^2$ 
+```{r log_loss}
+
+# This function returns the log loss for a single prediction
+log_loss <- function(actual, pred) {
+  loss <- -2 * (actual * log(pred) + (1 - actual) * log(1 - pred))
+  return(loss)
+}
+
+```
+
+```{r R2_OOS}
+
+spampredict %>% 
+  mutate(.fitted_null = mean(spam),
+         error = log_loss(spam, .fitted),
+         error.null = log_loss(spam, .fitted_null)) %>%
+  summarise(deviance = sum(error),
+            deviance.null = sum(error.null)) %>% 
+  mutate(R2 = 1 - deviance / deviance.null)
+  
+```
+
