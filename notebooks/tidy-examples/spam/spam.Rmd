@@ -1,0 +1,195 @@
+---
+title: 'Spam detection example'
+author:
+- "Matt Taddy"
+- "Itamar Caspi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: journal
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(eval = TRUE,
+                      echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+```
+
+## Setup
+
+Load required packages
+
+```{r load_packages}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(here,       # for referencing files and folders
+               tidyverse,  # for data reading wrangling and visualization
+               tidymodels) # for data modeling
+
+```
+
+Read the spam dataset
+
+```{r read_data}
+
+email <- read_csv(here("spam", "spam.csv"))
+
+```
+
+## Estimate the full model
+
+we fit the full model (you don't need to worry about the warning. It says that some covariates are nearly perfect predictors.)
+
+```{r estimate_model}
+
+spammy <- glm(spam ~ ., data=email, family='binomial')
+
+```
+
+The guy is named George and he works in a cs dept
+```{r george}
+
+email %>% 
+  group_by(spam, word_george, word_free) %>% 
+  tally() %>% 
+  pivot_wider(names_from = spam, values_from = n)
+
+```
+
+The model's coefficients
+```{r glm_coeffs}
+
+spammy %>% 
+  tidy() %>% 
+  filter(term %in% c("word_george", "word_free")) %>% 
+  mutate(exp_estimate = exp(estimate),
+         invexp_estimate = 1/exp(estimate)) %>% 
+  select(term, exp_estimate, invexp_estimate)
+
+```
+
+Predict spam versus not-spam probabilities and odds-ratio for two arbitrary observations (the 1st and 4000th)
+
+```{r}
+
+# odds
+spammy %>% 
+  augment() %>% 
+  select(.fitted) %>% 
+  slice(1,4000)
+
+# probability
+spammy %>% 
+  augment(type.predict = "response") %>% 
+  select(.fitted) %>% 
+  slice(1,4000)
+
+```
+
+
+Plot fitted values (probabilities) vs actual
+```{r fitted_boxplot}
+
+spammy %>% 
+  augment(type.predict = "response") %>% 
+  ggplot(aes(x = spam, y = .fitted, color = factor(spam))) +
+  geom_boxplot() +
+  labs(x = "",
+       y = "Fitted probability of spam",
+       color = "")
+
+```
+
+
+# Out-of-sample prediction
+
+Split the data in two. One data set, called the training set, and the other, the test set. We do so, by using the `initial_split()`, `training()`, and `testing()` functions from the `rsampl` package:
+
+```{r split}
+
+set.seed(1234) # for the replicating the results
+
+email_split <- email %>% 
+  initial_split(prop = 0.7825) # the prop is set to make the size of the test set = 1000
+
+email_split
+```
+
+
+```{r train_test}
+
+email_training <- email_split %>% training()
+email_testing  <- email_split %>% testing()
+
+```
+
+
+Estimate our model using the training set
+
+```{r train}
+
+spamtrain <- glm(spam ~ ., data=email_training, family='binomial')
+
+```
+
+Use the `spamtrain` model to make predictions on the test dataset
+
+```{r predict}
+
+spampredict <- spamtrain %>% 
+  augment(newdata = email_testing,
+          type.predict = "response")
+
+```
+
+Plot predicted values (probabilities) vs actual
+```{r boxplot_predict}
+
+spampredict %>% 
+  ggplot(aes(x = spam, y = .fitted, color = factor(spam))) +
+  geom_boxplot() +
+  labs(x = "",
+       y = "Predicted probability of spam",
+       color = "")
+
+```
+
+
+## Deviance
+
+In-sample proportion of variance explained ($R^2$)
+```{r R2_insample}
+
+glance(spammy) %>% 
+  mutate(R2 = (1 - deviance / null.deviance)) %>% 
+  select(null.deviance, deviance, R2)
+
+```
+
+Out-of-sample $R^2$ 
+```{r log_loss}
+
+# This function returns the log loss for a single prediction
+log_loss <- function(actual, pred) {
+  loss <- -2 * (actual * log(pred) + (1 - actual) * log(1 - pred))
+  return(loss)
+}
+
+```
+
+```{r R2_OOS}
+
+spampredict %>% 
+  mutate(.fitted_null = mean(spam),
+         error = log_loss(spam, .fitted),
+         error.null = log_loss(spam, .fitted_null)) %>%
+  summarise(deviance = sum(error),
+            deviance.null = sum(error.null)) %>% 
+  mutate(R2 = 1 - deviance / deviance.null)
+  
+```
+
