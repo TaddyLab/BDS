@@ -1,0 +1,293 @@
+---
+title: 'Credit Score'
+author:
+- "Matt Taddy"
+- "Itamar Caspi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: journal
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(eval = TRUE,
+                      echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+```
+
+## Load required packages
+
+```{r load_packages}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(here,        # for referencing files and folders
+               tidyverse,   # for data reading wrangling and visualization
+               tidymodels , # for data modeling
+               ggmosaic,    # for mosaic plots
+               gamlr)       # for running the gamma lasso algorithm
+```
+
+
+## Read and pre-process the data
+
+Read the data
+```{r read_data}
+
+credit_raw <- read_csv(here("credit", "credit.csv"))
+
+```
+
+Create some "interesting" variables by re-leveling the credit history and checking account status
+```{r preprocess}
+
+credit_processed <- credit_raw %>%
+  mutate(history = fct_collapse(history,
+    good     = c("A30", "A31"),
+    poor     = c("A32", "A33"),
+    terrible = c("A34")
+  )) %>%
+  mutate(foreign = fct_recode(foreign,
+    "foreign" = "A201",
+    "german"  = "A202"
+  )) %>%
+  mutate(purpose = fct_collapse(purpose,
+    newcar       = c("A40"),
+    usedcar      = c("A41"),
+    goods_repair = c("A42", "A43", "A44", "A45"),
+    edu          = c("A46", "A48"),
+    na           = c("A47"),
+    biz          = c("A49", "A410")
+  )) %>% 
+  mutate(rent = factor(housing == "A151"))
+```
+
+Our analysis focuses on a subset of nine variables
+```{r select}
+
+credit_df <- credit_processed %>% 
+  select(Default, duration, amount,
+         installment, age, history,
+         purpose, foreign, rent)
+  
+```
+
+Plot a mosaic using the `ggmosaic` package
+```{r mosaicplot}
+
+credit_df %>% 
+  mutate(Default = as_factor(Default)) %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Default, history), fill = Default)) + 
+  labs(x = "History",
+       y = "Default",
+       fill = "")
+
+```
+Surprise! the dangers of choice-based sampling!
+
+## Build a design matrix
+
+
++ `recipe()` starts a new set of transformations to be applied, Its main argument is a formula that defines the outcome (`Default` in our case) and the predictors.  
++ `step_x()` defines data transformations.  
++ `prep()` prepares the transformations based on the data that is supplied. 
++ `juice()` to generate the outcome and predictors matrix to be used in the eatimation step
+```{r recipe}
+
+credit_recipe <- credit_df %>% 
+  recipe(Default ~ .) %>% # defines Default as outcome and the rest as predictors
+  step_dummy(all_nominal(), -Default,
+             one_hot = TRUE) %>% # factors to dummies, keep all levels
+  step_interact(~ all_predictors():all_predictors()) %>% # pairwise interactions
+  step_zv(all_predictors()) %>% # remove redundent interactions
+  prep()
+
+credit_juiced <- juice(credit_recipe) 
+
+head(credit_juiced)
+```
+
+
+Estimate the model using `cv.gamlr()`
+```{r estimate_gamlr}
+
+cred_X <- credit_juiced %>% select(-Default) # predictors matrix
+cred_Y <- credit_juiced %>% select(Default)  # outcome vector
+
+credscore <- cv.gamlr(x = cred_X, y = cred_Y,
+                      family = "binomial",
+                      verb = TRUE)
+```
+
+
+Plot the lasso's regularization path and the cross-validation error for each value of $\lambda$
+```{r plot_gamlr}
+
+plot(credscore$gamlr)
+plot(credscore)
+
+```
+
+For the selected set of random folds, check how many variables are selected by each selection criterion
+```{r info_criteria}
+
+model_spec <- tribble(~criterion, ~var_selected,
+  "min",  sum(coef(credscore, s = "min") != 0),
+  "AICc", sum(coef(credscore$gamlr) != 0),
+  "1se",  sum(coef(credscore) != 0),
+  "AIC",  sum(coef(credscore$gamlr, s = which.min(AIC(credscore$gamlr))) != 0),
+  "BIC",  sum(coef(credscore$gamlr, s = which.min(BIC(credscore$gamlr))) != 0))
+
+model_spec
+
+```
+
+Augment the `credit_df` data with the model's prediction vector
+```{r augment_gamlr}
+
+pred <- predict(credscore$gamlr, newdata = cred_X, type="response") %>% 
+  drop() # remove the sparse matrix formatting
+
+credit_df_pred <- credit_df %>% 
+  mutate(.pred_prob = pred) %>% 
+  select(Default, .pred_prob)
+
+head(credit_df_pred)
+```
+
+Show in sample fitted probability (via a boxplot)
+```{r boxplot}
+
+credit_df_pred %>% 
+  ggplot(aes(x = as_factor(Default),
+             y = .pred_prob,
+             color = as_factor(Default))) +
+  geom_boxplot() +
+  labs(x = "Default",
+       y = "Fitted probability of default",
+       color = "Default")
+
+```
+
+## Misclassification rates
+
+Classify predictions to "1" and "0" based on an arbitrary rule
+```{r rule}
+
+rule <- 0.20 # move this around to see how these change
+
+credit_df_rule <- credit_df_pred %>% 
+  mutate(.pred_class = case_when(.pred_prob >= rule ~ 1,
+                                 .pred_prob <  rule ~ 0))
+
+head(credit_df_rule)
+```
+
+What are the misclassification rates?
+```{r accuracy}
+
+options(yardstick.event_first = FALSE) # consider "1" as the "positive" result
+
+sensitivity <- credit_df_rule %>%
+  sens(factor(Default), factor(.pred_class)) %>% 
+  pull(.estimate)
+
+specificity <- credit_df_rule %>%
+  spec(factor(Default), factor(.pred_class)) %>% 
+  pull(.estimate)
+
+accuracy_tbl <- tribble(~measure, ~value,
+                        "false positive rate", 1 - specificity,
+                        "false negative rate", 1 - sensitivity,
+                        "sensitivity", sensitivity,
+                        "specificity", specificity)
+
+accuracy_tbl
+```
+
+
+# Out of sample Prediction
+
+Split the sample in half
+```{r split}
+
+set.seed(1234) # for the replicating the results
+
+credit_split <- credit_df %>% 
+  initial_split(prop = 0.5) 
+
+credit_split
+```
+
+Prepare the recipe to be used later to generate the training and test samples
+```{r recipe_split}
+
+credit_recipe <- training(credit_split) %>% 
+  recipe(Default ~ .) %>% 
+  step_dummy(all_nominal(), - Default, one_hot = TRUE) %>% 
+  step_interact(~ all_predictors():all_predictors()) %>%
+  step_zv(all_predictors()) %>% 
+  prep()
+
+```
+
+Use the recipe to generate a training and test samples
+```{r train_test}
+
+credit_training <- credit_recipe %>% 
+  juice()
+
+credit_testing <- credit_recipe %>% 
+  bake(new_data = testing(credit_split))
+
+```
+
+Train the model
+```{r predict_oos}
+
+cred_X_train <- credit_training %>% select(-Default)
+cred_Y_train <- credit_training %>% select(Default)
+
+credscore <- cv.gamlr(x = cred_X_train, y = cred_Y_train,
+                      family = "binomial", verb = TRUE)
+
+```
+
+Evaluate the performance of of the model using the training set
+```{r roc_in_sample}
+
+pred_is <- predict(credscore$gamlr, newdata = cred_X_train, type="response") %>% 
+  drop()
+
+credit_training %>% 
+  mutate(.pred_prob = pred_is) %>% 
+  roc_curve(as_factor(Default), .pred_prob) %>% 
+  autoplot() +
+  labs(title = "In-sample ROC curve")
+
+```
+
+Evaluate the performance of the model using the test set
+```{r roc_out_of_sample}
+
+cred_X_test <- credit_testing  %>% select(-Default)
+
+pred_oos <- predict(credscore$gamlr, newdata = cred_X_test, type="response") %>% 
+  drop()
+
+credit_testing %>%
+  mutate(.pred_prob = pred_oos) %>% 
+  roc_curve(as_factor(Default), .pred_prob) %>% 
+  autoplot() +
+  labs(title = "Out-of-sample ROC curve")
+
+
+```
+
+## References
+
+Taddy, Matt. _Business Data Science: Combining Machine Learning and Economics to Optimize, Automate, and Accelerate Business Decisions_ . McGraw-Hill Education.
