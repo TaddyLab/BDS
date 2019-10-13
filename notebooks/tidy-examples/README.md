@@ -6,4 +6,6 @@ This folder includes replications of examples from Matt Taddy's [Business Data S
 
 Tidy-examples include:
 
-+ [Spam detection](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/spam/spam.html)
++ [Spam detection](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/spam/spam.html)  
++ [Credit Score](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/credit/credit.html)
+
