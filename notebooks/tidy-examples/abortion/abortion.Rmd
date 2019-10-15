@@ -1,0 +1,396 @@
+---
+title: 'Abortion and Crime'
+author:
+- "Matt Taddy"
+- "Itamar Caspi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: haddock
+    theme: journal
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+abstract: |
+  A replication of the abortion and crime example that appear in Matt Taddy's "Business Data Science", Chapter 6 under "High-Dimensional Confounder Adjustment."
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(eval = TRUE,
+                      echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+set.seed(1203) # for replicating the results
+
+```
+
+## Load required packages
+
+```{r load_packages}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(
+  here,        # for referencing files and folders
+  tidyverse,   # for data reading wrangling and visualization
+  tidymodels,  # for data modeling
+  gamlr,       # for running the gamma lasso algorithm
+  AER          # for robust standard errors
+)         
+```
+
+
+## The Data
+
+Read the data and rename the variables
+```{r read_data}
+
+abortion_raw <- read_tsv(here("abortion/data", "abortion.dat"))
+
+names(abortion_raw) <- c(
+  "state","year","c_pop","y_viol","y_prop","y_murd",
+	"a_murd","a_viol","a_prop","c_prison","c_police",
+	"c_ur","c_inc","c_pov","c_afdc","c_gun","c_beer"
+  )
+
+```
+
+The outcome `y_murd` is de-trended log crime rate. (note we also have violent and property crime versions.)  
+
+The abortion `a_*` variables are weighted average of abortion rates where weights are determined by the fraction of the type of crime committed by various age groups. For example, if 60% of violent crime were committed by 18 year olds and 40% were committed by 19 year olds in state $i$, the abortion rate for violent crime at time $t$ in state $i$ would be constructed as .6 times the abortion rate in state $i$ at time $t − 18$ plus 0.4 times the abortion rate in state $i$ at time $t − 19$. See Donohue and Levitt (2001) for further detail.  
+
+The set of counfounders, `c_*` variables, includes:  
+
+- `c_prison`: log of lagged prisoners per capita  
+- `c_police`: the log of lagged police per capita  
+- `c_ur`: the unemployment rate  
+- `c_inc`: per-capita income  
+- `c_pov`: the poverty rate  
+- `c_adfc`: generosity at year t-15  
+- `c_gun`: dummy for concealed weapons law  
+- `c_beer`: beer consumption per capita  
+
+Some pre-processing
+```{r preprocess}
+
+abortion_df <- abortion_raw %>% 
+  filter(
+    !state %in% c(2,9,12), # AK, DC, HA are strange places
+    year %in% 85:97,       # incomplete data outside these years
+    ) %>% 
+  mutate(
+    c_pop = log(c_pop),
+    t = year - 85,
+    s = factor(state)      # the states are numbered alphabetically
+  )
+  
+
+```
+
+
+## Replicating Donohue and Levitt
+
+In our analysis we'll just look at murder.
+
+The full regression model is then
+
+$$
+\mathbb{E}\left[y_{s t}\right]=\alpha_{s}+t \delta_{t}+d_{s t} \gamma+\boldsymbol{x}_{s t}^{\prime} \boldsymbol{\beta}
+$$
+
+We fit using `glm()`
+```{r orig}
+
+orig_df <- abortion_df %>% 
+  select(y_murd, a_murd, t, s, c_pop, c_prison:c_beer) 
+
+orig_glm <- glm(y_murd ~ ., data = orig_df)
+
+orig_glm %>% 
+  tidy() %>% 
+  filter(term == "a_murd")
+
+```
+This is the Levitt analysis: higher abortion leads to lower crime
+
+## Adding Cellphones
+
+That abortion is only one factor influencing crime in the late 1980s points
+out the caution required in drawing any conclusions regarding an abortion-crime
+link based on time series evidence alone
+
+Now the same analysis, but for cellphones rather than abortion
+```{r cell_data}
+
+cell_raw <- read_csv(here("abortion/data", "us_cellphone.csv"))
+
+cell_df <- cell_raw %>% 
+  mutate(
+    cellrate = 5 * subscribers / (1000 * pop), 
+    year = year - 1900
+  )
+    
+```
+
+What if we're just fitting a quadratic trend? There are many things that increased with similar shapes over time (cellphone usage, yoga revenues, home prices, ...)
+
+```{r join_cell_abortion}
+
+abortion_cell_df <- abortion_df %>% 
+  left_join(
+    cell_df %>% select(year, cellrate),
+    by = "year"
+    )
+
+```
+
+
+```{r plot_cell_aportion}
+
+abortion_cell_yearly <- abortion_cell_df %>% 
+  group_by(year) %>% 
+  summarise(abortions = mean(a_murd),
+            cellphones = mean(cellrate)) %>% 
+  pivot_longer(-year, names_to = "treatment", values_to = "value")
+
+abortion_cell_yearly %>% 
+  ggplot(aes(x = as_factor(year), y = value, color = treatment)) +
+  geom_point(size = 2) +
+  labs(x = "year", 
+       y = "rate",
+       color = "")
+
+```
+
+
+```{r}
+
+tech_df <- abortion_cell_df %>% 
+  select(y_murd, a_murd, cellrate, t, s, c_pop, c_prison:c_beer) %>% 
+  rename(phone = cellrate)
+  
+
+tech_glm <- glm(y_murd ~ . - a_murd, data = tech_df)
+
+tech_glm %>% 
+  tidy() %>% 
+  filter(term == "phone")
+
+```
+
+What is happening here is that murder has been increasing quadratically, and we have no other controls that do so. To be correct, you need to allow quadratic trends that could be caused by other confounding variables (e.g. technology), we also allow interaction between the controls, and interact the nation-wide phone variable with state dummies to allow for state specific tech adoption.
+
+```{r interact}
+
+interact_df <- tech_df %>% 
+  mutate(t = as_factor(t)) %>% 
+  recipe(y_murd ~ .) %>% 
+  step_dummy(all_nominal()) %>% 
+  step_interact(~ starts_with("s_"):phone) %>%
+  step_interact(~ starts_with("c_"):starts_with("c_")) %>% 
+  step_zv(all_predictors()) %>% 
+  prep() %>% 
+  juice()
+
+interact_glm <- glm(y_murd ~ ., data = interact_df)
+
+interact_glm %>% 
+  tidy() %>% 
+  filter(term == "a_murd")
+
+```
+Abortion sign has switched direction (and is insignificant)!
+
+## LTE Lasso Regression
+
+We have very few observations relative to number of parameters, so we need a way to select only important controls. We try using a lasso.
+
+Define the data to be used in the lasso
+```{r lasso_recipe}
+
+lasso_df <- tech_df %>% 
+  mutate(t = as_factor(t)) %>% 
+  recipe(y_murd ~ .) %>% 
+  step_dummy(all_nominal(), one_hot = TRUE) %>% 
+  step_interact(~ starts_with("s_"):phone) %>%
+  step_interact(~ starts_with("c_"):starts_with("c_")) %>% 
+  step_zv(all_predictors()) %>% 
+  prep() %>% 
+  juice()
+
+head(lasso_df)
+```
+
+Generate the input to be used in the `cv.gamlr()` function
+```{r lasso_input}
+
+d_X <- lasso_df %>% select(-y_murd)
+X   <- lasso_df %>% select(-y_murd, -a_murd)
+d   <- lasso_df %>% select(a_murd)
+y   <- lasso_df %>% select(y_murd)
+```
+
+A naive lasso regression
+```{r naive}
+
+naive <- cv.gamlr(x = d_X, y = y)
+coef(naive)["a_murd",]
+
+```
+The effect is CV selected <0
+
+Now, what if we explicitly include $\hat{d}$?
+```{r treat}
+
+treat <- cv.gamlr(x = X, y = d)
+
+dhat <- tibble(a_murd_hat = drop(predict(treat, X, select = "min"))) 
+
+bind_cols(d, dhat) %>% 
+  ggplot(aes(x = a_murd_hat, y = a_murd)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = expression(hat(d)),
+       y = expression(d))
+
+```
+  
+Not much signal in $d$ not predicted by $\hat{d}$. That means we have little to resemble an experiment here.
+
+Re-run lasso, with $\hat{d}$ included _unpenalized_
+```{r causal}
+
+causal <- cv.gamlr(x = bind_cols(d, dhat, X), 
+                   y = y,
+                   free = 2,
+                   lmr = 1e-3)
+
+coef(causal, select="min")["a_murd",]
+
+```
+Thus, the LTE lasso procedure finds no evidence for effect of abortion on murder.
+
+## Orthogonal ML
+
+Split the data to $K=5$ independent folds indexed by $k=1,\dots,5$, and each fold to training and test sets
+```{r crossfit_folds}
+
+n_folds <- 5
+
+crossfit_folds <- lasso_df %>% 
+  vfold_cv(v = n_folds) %>%  
+  mutate(train = map(splits, ~ training(.x)), 
+         test  = map(splits, ~ testing(.x)))
+
+crossfit_folds
+
+```
+
+Prepare data for the orthogonal ML for LTE algorithm
+```{r crossfit_df}
+
+crossfit_df <- crossfit_folds %>% 
+  mutate(
+    X = map(train, ~ select(., -y_murd, -a_murd)),
+    d = map(train, ~ select(., a_murd)),
+    y = map(train, ~ select(., y_murd)),
+    X_test = map(test, ~ select(., -y_murd, -a_murd)),
+    d_test = map(test, ~ select(., a_murd)),
+    y_test = map(test, ~ select(., y_murd))
+  )
+
+```
+
+Apply the algorithm
+```{r crossfit_estimation}
+
+crossfit_est <- crossfit_df %>% 
+  mutate(
+    # step 1: fit the prediction functions using the training set
+    dfit = map2(X, d, ~ cv.gamlr(x = .x, y = .y, lmr=1e-5)),
+    yfit = map2(X, y, ~ cv.gamlr(x = .x, y = .y, lmr=1e-5)),
+    # step 2: form prediction on the test set
+    dhat = map2(dfit, X_test, ~ drop(predict(.x, .y))),
+    yhat = map2(yfit, X_test, ~ drop(predict(.x, .y))),
+    # step 3: calculate out-of-sample residuals
+    dtil = map2(d_test, dhat, ~ .x - .y),
+    ytil = map2(y_test, yhat, ~ .x - .y),
+    # step 4: for each fold, estimate the effect using the residuals
+    df   = map2(ytil, dtil, ~ bind_cols(.x, .y)),
+    fit  = map(df, ~ tidy(lm(y_murd ~ a_murd, data = .)))
+  )
+
+```
+
+Collect all of the out-of-sample residuals from the nuisance stage, and use OLS to fit the regression
+$$
+\mathbb{E}[\tilde{y} | \tilde{d}]=\alpha+\tilde{d} \gamma
+$$
+
+
+```{r crossfit_aggregate}
+
+orth_ml_df <- crossfit_est %>% 
+  select(df) %>% 
+  unnest(df)
+
+rfit <- lm(y_murd ~ a_murd, data = orth_ml_df)
+
+rfit %>% 
+  coeftest(vcov = vcovHC(rfit)) %>% 
+  tidy() %>% 
+  filter(term == "a_murd")
+```
+
+
+## Appendix: Averaging over folds (Cross-fitting)
+
+These are the estimation results for each fold
+```{r crossfit_fold_results}
+
+crossfit_results <- crossfit_est %>%
+  select(fit) %>% 
+  unnest(fit) %>% 
+  filter(term == "a_murd")
+
+crossfit_results
+
+```
+
+Now, instead running stacking $\tilde{d}$ and $\tilde{y}$ across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimate of $\gamma$ as the average over multiple splits of the data
+
+$$
+\widehat{\gamma}_{CF}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\gamma}_{(k)}
+$$
+and set the estimator of the variance as
+
+$$
+\widehat{\sigma}_{CF}^{2}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\sigma}^{2}_{(k)}+\frac{1}{K}\left\{\sum_{i=1}^{K} {\left(\widehat{\gamma}_{(k)}-\widehat{\gamma}_{CF}\right)^{2}}\right\}
+$$
+
+where $\widehat{\gamma}_{(k)}$ and $\widehat{\sigma}^{2}_{(k)}$ are the ATE and its corresponding variance, respectively, estimated using the $k^{\text{th}}$ fold.
+
+
+```{r crossfit_mean_results}
+
+crossfit_results %>% 
+  mutate(
+    var_cf_1st_term = std.error^2,
+    var_cf_2nd_term = (estimate - mean(estimate))^2
+  ) %>% 
+  summarise(
+    gamma_cf = mean(estimate),
+    se_cf    = sqrt(mean(var_cf_1st_term + var_cf_2nd_term))
+  )
+
+```
+
+## References
+
+Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W., & Robins, J. (2018). Double/debiased machine learning for treatment and structural parameters. _The Econometrics Journal_, 21(1), C1-C68.
+
+Donohue III, J. J., & Levitt, S. D. (2001). The impact of legalized abortion on crime. _The Quarterly Journal of Economics_, 116(2), 379-420.
+
+Taddy, M. _Business Data Science: Combining Machine Learning and Economics to Optimize, Automate, and Accelerate Business Decisions_ . McGraw-Hill Education.
