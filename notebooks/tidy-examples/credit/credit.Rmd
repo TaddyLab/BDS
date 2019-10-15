@@ -6,7 +6,13 @@ author:
 date: "`r Sys.Date()`"
 output:
   html_document:
+    highlight: haddock
     theme: journal
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+abstract: |
+  A replication of the German credit score example that appear in Matt Taddy's "Business Data Science"m Chapter 4 under "Probability, Cost, and Classification."
 ---
 
 ```{r setup, include=FALSE}
@@ -210,7 +216,7 @@ accuracy_tbl
 ```
 
 
-# Out of sample Prediction
+## Out of sample Prediction
 
 Split the sample in half
 ```{r split}
