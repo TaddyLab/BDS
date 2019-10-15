@@ -359,12 +359,12 @@ crossfit_results
 
 ```
 
-Now, instead running stacking $\tilde{d}$ and $\tilde{y}$ across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimate of $\gamma$ as the average over multiple splits of the data
+Now, instead stacking $\tilde{d}$ and $\tilde{y}$ across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimator for $\gamma$ as the average $\gamma$ over multiple splits of the data
 
 $$
 \widehat{\gamma}_{CF}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\gamma}_{(k)}
 $$
-and set the estimator of the variance as
+and the estimator for the variance as
 
 $$
 \widehat{\sigma}_{CF}^{2}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\sigma}^{2}_{(k)}+\frac{1}{K}\left\{\sum_{i=1}^{K} {\left(\widehat{\gamma}_{(k)}-\widehat{\gamma}_{CF}\right)^{2}}\right\}

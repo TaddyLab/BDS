@@ -1900,10 +1900,10 @@ div.tocify {
 ## 3 a_murd  0.164       0.129   1.28     0.204 
 ## 4 a_murd  0.00204     0.351   0.00580  0.995 
 ## 5 a_murd  0.268       0.245   1.10     0.275</code></pre>
-<p>Now, instead running stacking <span class="math inline">\(\tilde{d}\)</span> and <span class="math inline">\(\tilde{y}\)</span> across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimate of <span class="math inline">\(\gamma\)</span> as the average over multiple splits of the data</p>
+<p>Now, instead stacking <span class="math inline">\(\tilde{d}\)</span> and <span class="math inline">\(\tilde{y}\)</span> across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimator for <span class="math inline">\(\gamma\)</span> as the average <span class="math inline">\(\gamma\)</span> over multiple splits of the data</p>
 <p><span class="math display">\[
 \widehat{\gamma}_{CF}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\gamma}_{(k)}
-\]</span> and set the estimator of the variance as</p>
+\]</span> and the estimator for the variance as</p>
 <p><span class="math display">\[
 \widehat{\sigma}_{CF}^{2}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\sigma}^{2}_{(k)}+\frac{1}{K}\left\{\sum_{i=1}^{K} {\left(\widehat{\gamma}_{(k)}-\widehat{\gamma}_{CF}\right)^{2}}\right\}
 \]</span></p>
