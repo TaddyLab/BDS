@@ -37,7 +37,8 @@ pacman::p_load(
   tidyverse,   # for data reading wrangling and visualization
   tidymodels,  # for data modeling
   gamlr,       # for running the gamma lasso algorithm
-  AER          # for robust standard errors
+  AER,         # for robust standard errors
+  furrr        # for parallel loops
 )         
 ```
 
@@ -57,7 +58,7 @@ names(abortion_raw) <- c(
 
 ```
 
-The outcome `y_murd` is de-trended log crime rate. (note we also have violent and property crime versions.)  
+The outcome, `y_murd`, is the de-trended log crime rate. (note we also have violent and property crime versions.)  
 
 The abortion `a_*` variables are weighted average of abortion rates where weights are determined by the fraction of the type of crime committed by various age groups. For example, if 60% of violent crime were committed by 18 year olds and 40% were committed by 19 year olds in state $i$, the abortion rate for violent crime at time $t$ in state $i$ would be constructed as .6 times the abortion rate in state $i$ at time $t − 18$ plus 0.4 times the abortion rate in state $i$ at time $t − 19$. See Donohue and Levitt (2001) for further detail.  
 
@@ -72,7 +73,8 @@ The set of counfounders, `c_*` variables, includes:
 - `c_gun`: dummy for concealed weapons law  
 - `c_beer`: beer consumption per capita  
 
-Some pre-processing
+## Data preprocessing
+
 ```{r preprocess}
 
 abortion_df <- abortion_raw %>% 
@@ -134,8 +136,7 @@ cell_df <- cell_raw %>%
     
 ```
 
-What if we're just fitting a quadratic trend? There are many things that increased with similar shapes over time (cellphone usage, yoga revenues, home prices, ...)
-
+Merge `cellrate` with the abortion dataset
 ```{r join_cell_abortion}
 
 abortion_cell_df <- abortion_df %>% 
@@ -146,6 +147,8 @@ abortion_cell_df <- abortion_df %>%
 
 ```
 
+
+What if we're just fitting a quadratic trend? There are many things that increased with similar shapes over time (cellphone usage, yoga revenues, home prices, ...)
 
 ```{r plot_cell_aportion}
 
@@ -164,7 +167,7 @@ abortion_cell_yearly %>%
 
 ```
 
-
+Estimate a regression where `phones` is defined as the treatment variable
 ```{r}
 
 tech_df <- abortion_cell_df %>% 
@@ -239,7 +242,7 @@ naive <- cv.gamlr(x = d_X, y = y)
 coef(naive)["a_murd",]
 
 ```
-The effect is CV selected <0
+The effect is CV selected and negative
 
 Now, what if we explicitly include $\hat{d}$?
 ```{r treat}
@@ -303,7 +306,7 @@ crossfit_df <- crossfit_folds %>%
 
 ```
 
-Apply the algorithm
+Apply the orthogonal ML algorithm
 ```{r crossfit_estimation}
 
 crossfit_est <- crossfit_df %>% 
@@ -315,11 +318,9 @@ crossfit_est <- crossfit_df %>%
     dhat = map2(dfit, X_test, ~ drop(predict(.x, .y))),
     yhat = map2(yfit, X_test, ~ drop(predict(.x, .y))),
     # step 3: calculate out-of-sample residuals
-    dtil = map2(d_test, dhat, ~ .x - .y),
-    ytil = map2(y_test, yhat, ~ .x - .y),
-    # step 4: for each fold, estimate the effect using the residuals
-    df   = map2(ytil, dtil, ~ bind_cols(.x, .y)),
-    fit  = map(df, ~ tidy(lm(y_murd ~ a_murd, data = .)))
+    dtil   = map2(d_test, dhat, ~ .x - .y),
+    ytil   = map2(y_test, yhat, ~ .x - .y),
+    til_df = map2(ytil, dtil, ~ bind_cols(.x, .y)),
   )
 
 ```
@@ -329,12 +330,11 @@ $$
 \mathbb{E}[\tilde{y} | \tilde{d}]=\alpha+\tilde{d} \gamma
 $$
 
-
 ```{r crossfit_aggregate}
 
 orth_ml_df <- crossfit_est %>% 
-  select(df) %>% 
-  unnest(df)
+  select(til_df) %>% 
+  unnest(til_df)
 
 rfit <- lm(y_murd ~ a_murd, data = orth_ml_df)
 
@@ -342,50 +342,139 @@ rfit %>%
   coeftest(vcov = vcovHC(rfit)) %>% 
   tidy() %>% 
   filter(term == "a_murd")
+
 ```
 
 
-## Appendix: Averaging over folds (Cross-fitting)
+## Appendix: Accounting for Uncertainty Due to Sample-Splitting
 
-These are the estimation results for each fold
-```{r crossfit_fold_results}
+We write a function that accepts a `rsplit` object and returns a tibble with the orthogonalized $y$ and $d$. This function will allow us to run our code in parallel.
+```{r}
 
-crossfit_results <- crossfit_est %>%
-  select(fit) %>% 
-  unnest(fit) %>% 
+orth_ml <- function(split, outcome, treatment) {
+  
+  # tidy evaluation of arguments
+  outcome   <- enquo(outcome)   
+  treatment <- enquo(treatment)
+  # generate training and testing set
+  training <- split %>% training()
+  testing  <- split %>% testing()
+  # step 1: fit the prediction functions using the training set
+  d_fit <- cv.gamlr(
+    x = training %>% select(- !! outcome, - !! treatment),
+    y = training %>% select(!! treatment)
+  )
+  y_fit <- cv.gamlr(
+    x = training %>% select(- !! outcome, - !! treatment),
+    y = training %>% select(!! outcome)
+  )
+  # step 2: form prediction on the test set
+  d_hat <- d_fit %>% 
+    predict(newdata = testing %>% select(- !! outcome, - !! treatment)) %>% 
+    drop()
+  y_hat <- y_fit %>% 
+    predict(newdata = testing %>% select(- !! outcome, - !! treatment)) %>% 
+    drop()
+  # step 3: calculate out-of-sample residuals
+  d_test <- testing %>% select(!! treatment)
+  y_test <- testing %>% select(!! outcome)
+  d_til <- d_test - d_hat
+  y_til <- y_test - y_hat
+  
+  return(bind_cols(y_til, d_til))
+
+}
+
+```
+
+Generate repeated 100 replications of the data, each with a random split to 5 folds
+```{r crossfit_splits}
+
+n_splits <- 100 # number of replications
+n_folds  <- 5 # number of folds
+
+splits <- lasso_df %>% 
+  vfold_cv(v = n_folds, repeats = n_splits)
+
+splits
+```
+
+Generate are the orthogonalized residuals, sorted by replication
+```{r crossfit_resids}
+
+plan(multiprocess) # use multiple cores
+
+resids <- splits %>% 
+  mutate(df = future_map(
+    splits, ~ orth_ml(., outcome = y_murd, treatment = a_murd))
+  ) %>% 
+  select(id, df) %>% 
+  unnest(df)
+
+head(residuals)
+```
+
+Estimate the treatment effect for each replication
+```{r crossfit_coefs}
+
+coefs <- resids %>% 
+  nest(data = c(y_murd, a_murd)) %>% 
+  mutate(
+    rfit = map(data, ~ lm(y_murd ~ a_murd, data = .)),
+    coef = map(rfit, ~ tidy(coeftest(., vcov = vcovHC(.))))
+  ) %>% 
+  unnest(coef) %>% 
+  select(id, term, estimate, std.error) %>% 
   filter(term == "a_murd")
 
-crossfit_results
+coefs
 
 ```
 
-Now, instead stacking $\tilde{d}$ and $\tilde{y}$ across folds and then running the regression, we follow Chernozhukov et al., (2018) and define the cross-fitting estimator for $\gamma$ as the average $\gamma$ over multiple splits of the data
+Now, following Chernozhukov et al., (2018) we define the mean estimator for $\gamma$ as the average $\gamma$ across $s=1, \dots, S$ replications, i.e., 
 
 $$
-\widehat{\gamma}_{CF}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\gamma}_{(k)}
-$$
-and the estimator for the variance as
-
-$$
-\widehat{\sigma}_{CF}^{2}=\frac{1}{K} \sum_{k=1}^{K} \widehat{\sigma}^{2}_{(k)}+\frac{1}{K}\left\{\sum_{i=1}^{K} {\left(\widehat{\gamma}_{(k)}-\widehat{\gamma}_{CF}\right)^{2}}\right\}
+\widehat{\gamma}_{\text{MEAN}}=\frac{1}{S} \sum_{s=1}^{S} \widehat{\gamma}_{(s)}
 $$
 
-where $\widehat{\gamma}_{(k)}$ and $\widehat{\sigma}^{2}_{(k)}$ are the ATE and its corresponding variance, respectively, estimated using the $k^{\text{th}}$ fold.
+and the estimator for the variance is defined as
+
+$$
+\widehat{\sigma}_{\text{MEAN}}^{2}=\frac{1}{S} \sum_{s=1}^{S} \widehat{\sigma}^{2}_{(s)}+\frac{1}{S}\left\{\sum_{s=1}^{S} {\left(\widehat{\gamma}_{(s)}-\widehat{\gamma}_{\text{MEAN}}\right)^{2}}\right\}
+$$
+
+where $\widehat{\gamma}_{(s)}$ and $\widehat{\sigma}^{2}_{(s)}$ are the ATE and its corresponding variance that are estimated using the $s^{\text{th}}$ replication of the data.
 
 
-```{r crossfit_mean_results}
+Plot the distribution of $\widehat{\gamma}_{(s)}$
+```{r crossfit_hist}
 
-crossfit_results %>% 
+coefs %>% 
+  ggplot(aes(estimate)) + 
+  geom_histogram(bins = 10) +
+  labs(x = expression(hat(gamma)))
+
+```
+
+Finally, calculate $\widehat{\gamma}_{\text{MEAN}}$ and $\widehat{\sigma}_{\text{MEAN}}$
+```{r crossfit_mean}
+
+coefs %>% 
   mutate(
-    var_cf_1st_term = std.error^2,
-    var_cf_2nd_term = (estimate - mean(estimate))^2
+    var_1st_term = std.error^2,
+    var_2nd_term = (estimate - mean(estimate))^2,
+    var_2nd_term_median = (estimate - median(estimate))^2,
   ) %>% 
   summarise(
-    gamma_cf = mean(estimate),
-    se_cf    = sqrt(mean(var_cf_1st_term + var_cf_2nd_term))
+    gamma_mean   = mean(estimate),
+    se_mean      = sqrt(mean(var_1st_term + var_2nd_term)),
+    gamma_median = median(estimate),
+    se_median    = median(sqrt(var_1st_term + var_2nd_term_median))
   )
 
 ```
+
+Note that we've also included the median version of the above estimators that are more robust to extreme point estimates obtained in the different random partitions of the data.
 
 ## References
 
