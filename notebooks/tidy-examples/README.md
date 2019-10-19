@@ -8,4 +8,5 @@ Tidy-examples include:
 
 + [Spam detection](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/spam/spam.html)  
 + [Credit Score](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/credit/credit.html)
++ [Abortion and Crime](https://raw.githack.com/TaddyLab/BDS/master/notebooks/tidy-examples/abortion/abortion.html)
 
