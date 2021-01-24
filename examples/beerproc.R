@@ -81,3 +81,14 @@ wber[,STORE:=as.character(STORE)]
 wber <- as.data.frame(wber)
 
 save(wber, upc, demo, file="dominicks-beer.rda")
+
+load("../../BDS/examples/dominicks-beer.rda")
+wber$STORE <- factor(as.numeric(wber$STORE))
+
+sales <- naref(wber)
+names(sales) <- c("store","upc","week","price","units")
+sales<-sales[order(sales$store,sales$upc,sales$week),] 
+names(upc) <- c("title","oz")
+
+save(sales, upc, file="Beer.rda", compress=TRUE)
+
